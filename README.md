@@ -309,7 +309,7 @@ to a mailbox, or expose only a hand-picked subset of tools.
 
 | Variable | Effect |
 | --- | --- |
-| `IMAP_MCP_READ_ONLY` | When truthy (`1`, `true`, `yes`, `on`), only the safe, read-only tools are registered — searching, reading, listing folders, unread counts, spam analysis. No tool that sends mail, deletes/moves messages, creates or renames folders, changes flags, or edits accounts is exposed. |
+| `IMAP_MCP_READ_ONLY` | When truthy (`1`, `true`, `yes`, `on`), only the safe, read-only tools are registered — searching, reading, listing folders, unread counts, spam analysis. No tool that sends mail, deletes/moves/copies messages, creates or renames folders, changes flags, or edits accounts is exposed. |
 | `IMAP_MCP_ENABLED_TOOLS` | Comma-separated allowlist of tool names — only these are registered. Names are case-insensitive and the `imap_` prefix is optional (`search_emails` ≡ `imap_search_emails`). When set, it takes precedence over `IMAP_MCP_READ_ONLY`. |
 
 **Example — read-only access:**
@@ -541,6 +541,38 @@ sending, drafts, replies, and forwards.
   - targetFolder: Destination folder name
   - createDestinationIfMissing: Create the destination folder if it does not exist (default: false)
   ```
+
+- **imap_copy_email**: Copy emails to another folder in the same account with IMAP `COPY`. The original stays where it is: nothing is moved, flagged, deleted or expunged.
+  ```
+  Parameters:
+  - accountId: Account ID
+  - folder: Source folder (required, no default)
+  - uid: Email UID, or an array of UIDs (duplicates are copied once)
+  - targetFolder: Destination folder. Must already exist and differ from
+      the source; it is never created.
+
+  Returns:
+  - success (all copied), partial (some copied), uncertain (at least one
+      outcome unknown)
+  - copiedCount, failedCount, uncertainCount, notAttemptedCount
+  - results: [{ uid, status, uidMap?, error? }], where status is
+      copied | failed | uncertain | not_attempted. uidMap appears only when
+      the server reports it (UIDPLUS COPYUID).
+  - on refusal: success: false and a reason — destination_not_found,
+      source_not_found, same_folder or no_uids
+  ```
+  `failed` means definitely not copied: the UID isn't in the source folder, or
+  the server refused the copy. `uncertain` means the connection dropped while
+  the copy was in flight, so it may have landed. Copying stops there, the
+  remaining UIDs are reported `not_attempted`, and nothing is retried. Check
+  the destination before calling again, or the message may be duplicated.
+  On servers that show labels as folders (Proton Mail Bridge `Labels/<name>`,
+  Gmail labels), copying into a label folder adds the label.
+  On providers whose folders are exclusive (a message can be in only one
+  folder), the server may turn a copy into a move. On Proton Mail Bridge,
+  copying into `Folders/<name>` reports success and first shows the message in
+  both places, but once Bridge syncs with Proton the message is gone from its
+  original folder.
 
 - **imap_find_thread_messages**: Find inbox messages that belong to the same conversation threads as messages already sorted into another folder. Uses RFC 3501 HEADER search on In-Reply-To and References — works on any IMAP server.
   ```

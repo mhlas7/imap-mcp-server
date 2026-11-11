@@ -7,6 +7,7 @@ import { parseSerializedArray } from '../utils/array-input.js';
 import { mergeBcc } from '../utils/default-bcc.js';
 import { allowedFromAddresses, resolveFrom } from '../utils/send-as.js';
 import { buildReferences, buildReplyRecipients } from '../utils/reply-headers.js';
+import { errorReason } from '../utils/operation-error.js';
 import type { EmailAttachment, EmailMessage, ImapAccount, SentSaveResult } from '../types/index.js';
 import { z } from 'zod';
 import { basename, join } from 'path';
@@ -852,6 +853,71 @@ export function emailTools(
           text: JSON.stringify({
             success: false,
             message: `Failed to move email ${uid} from ${folder} to ${targetFolder}`,
+            error: err instanceof Error ? err.message : 'Unknown error',
+          }, null, 2)
+        }]
+      };
+    }
+  });
+
+  // Copy email to another folder (#222)
+  server.registerTool('imap_copy_email', {
+    description:
+      'Copy one or more emails to another folder in the same account with IMAP COPY. The original stays where it is, ' +
+      'untouched (nothing is moved, flagged or deleted). Use this instead of imap_move_email when the message must stay ' +
+      'in its current folder. On servers that expose labels as folders (Proton Mail Bridge "Labels/<name>", Gmail labels), ' +
+      'copying into a label folder adds that label. On providers whose folders are exclusive (a message lives in only one), ' +
+      'the server may turn a copy into a move: on Proton Mail Bridge, copying into "Folders/<name>" takes the message out of its ' +
+      'current folder once Bridge syncs, even though the copy reports success. The destination must already exist (use imap_create_folder first). ' +
+      'Each UID gets a status: "copied", "failed" (definitely not copied), "uncertain" (the connection dropped mid-copy, so ' +
+      'a copy may exist) or "not_attempted" (skipped after an uncertain one). Never repeat a call for "uncertain" UIDs ' +
+      'without first checking the destination folder (e.g. imap_find_email_by_message_id), or the message may be duplicated.',
+    inputSchema: {
+      ...accountSelector,
+      folder: z.string().describe('Source folder holding the UIDs (exact path from imap_list_folders). Required: UIDs are only meaningful within their own folder.'),
+      uid: uidList('Email UID, or array of UIDs, in the source folder. Duplicate UIDs are copied once.').nonoptional(),
+      targetFolder: z.string().describe('Destination folder (exact path; must already exist and differ from the source), e.g. "Labels/2026 Thailand" or "Archive"'),
+    }
+  }, async ({ accountId: rawAccountId, accountName, folder, uid, targetFolder }) => {
+    const accountId = accountManager.resolveAccountId(rawAccountId, accountName);
+    try {
+      const { results } = await imapService.copyEmail(accountId, folder, uid, targetFolder);
+      const count = (status: string) => results.filter(r => r.status === status).length;
+      const copiedCount = count('copied');
+      const failedCount = count('failed');
+      const uncertainCount = count('uncertain');
+      const notAttemptedCount = count('not_attempted');
+      const success = copiedCount === results.length;
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success,
+            partial: copiedCount > 0 && !success,
+            uncertain: uncertainCount > 0,
+            message: `Copied ${copiedCount}/${results.length} email(s) from ${folder} to ${targetFolder}` +
+              (uncertainCount > 0 ? '; check the destination before retrying the uncertain ones' : ''),
+            source: folder,
+            destination: targetFolder,
+            copiedCount,
+            failedCount,
+            uncertainCount,
+            notAttemptedCount,
+            results,
+          }, null, 2)
+        }]
+      };
+    } catch (err) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            partial: false,
+            uncertain: false,
+            source: folder,
+            destination: targetFolder,
+            reason: errorReason(err),
             error: err instanceof Error ? err.message : 'Unknown error',
           }, null, 2)
         }]

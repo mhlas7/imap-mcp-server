@@ -16,6 +16,7 @@ class MockImapFlow {
   public messageFlagsAddMock = vi.fn().mockResolvedValue(true);
   public messageFlagsRemoveMock = vi.fn().mockResolvedValue(true);
   public messageDeleteMock = vi.fn().mockResolvedValue(undefined);
+  public messageCopyMock = vi.fn().mockImplementation((uid: number) => Promise.resolve({ path: 'INBOX', destination: 'Labels/Trip', uidMap: new Map([[uid, uid + 1000]]) }));
   public messageMoveMock = vi.fn().mockResolvedValue({ path: 'INBOX', destination: 'Archive', uidMap: new Map([[123, 456]]) });
   public mailboxCreateMock = vi.fn().mockResolvedValue({ path: 'NewFolder', created: true });
   public mailboxRenameMock = vi.fn().mockImplementation((path: string, newPath: string) => Promise.resolve({ path, newPath }));
@@ -35,6 +36,7 @@ class MockImapFlow {
   messageFlagsRemove(uid: any, flags: any, opts: any) { return this.messageFlagsRemoveMock(uid, flags, opts); }
   messageDelete(uid: any, opts: any) { return this.messageDeleteMock(uid, opts); }
   messageMove(uid: any, target: any, opts: any) { return this.messageMoveMock(uid, target, opts); }
+  messageCopy(uid: any, target: any, opts: any) { return this.messageCopyMock(uid, target, opts); }
   mailboxCreate(path: any) { return this.mailboxCreateMock(path); }
   mailboxRename(path: any, newPath: any) { return this.mailboxRenameMock(path, newPath); }
   status(name: string, opts: any) { return this.statusMock(name, opts); }
@@ -63,6 +65,8 @@ vi.mock('imapflow', () => {
         this.messageFlagsRemove = mockInstance.messageFlagsRemove.bind(mockInstance);
         this.messageDelete = mockInstance.messageDelete.bind(mockInstance);
         this.messageMove = mockInstance.messageMove.bind(mockInstance);
+        this.messageCopy = mockInstance.messageCopy.bind(mockInstance);
+        Object.defineProperty(this, 'usable', { get: () => mockInstance.usable, configurable: true });
         this.mailboxCreate = mockInstance.mailboxCreate.bind(mockInstance);
         this.mailboxRename = mockInstance.mailboxRename.bind(mockInstance);
         this.status = mockInstance.status.bind(mockInstance);
@@ -905,6 +909,160 @@ describe('ImapService', () => {
       await expect(imapService.renameFolder(mockAccount.id, 'Projects', 'Work'))
         .rejects.toMatchObject({ reason: 'outcome_unknown' });
       expect(mockInstance.mailboxRenameMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('copyEmail', () => {
+    const folders = [
+      { path: 'INBOX', delimiter: '/' },
+      { path: 'All Mail', delimiter: '/' },
+      { path: 'Labels/Trip', delimiter: '/' },
+    ];
+
+    /** Make fetch() yield the given UIDs as present in the source folder. */
+    function sourceHas(...uids: number[]) {
+      mockInstance.fetchMock.mockImplementation(async function* () {
+        for (const uid of uids) yield { uid };
+      });
+    }
+
+    function expectNothingDestructive() {
+      expect(mockInstance.messageMoveMock).not.toHaveBeenCalled();
+      expect(mockInstance.messageDeleteMock).not.toHaveBeenCalled();
+      expect(mockInstance.messageFlagsAddMock).not.toHaveBeenCalled();
+      expect(mockInstance.messageFlagsRemoveMock).not.toHaveBeenCalled();
+      expect(mockInstance.mailboxCreateMock).not.toHaveBeenCalled();
+    }
+
+    beforeEach(() => {
+      mockInstance.listMock.mockResolvedValue(folders);
+      sourceHas(1, 2, 3);
+    });
+
+    it('copies each UID with UID COPY and leaves the original untouched', async () => {
+      await imapService.connect(mockAccount);
+
+      const result = await imapService.copyEmail(mockAccount.id, 'INBOX', [1, 2], 'Labels/Trip');
+
+      expect(mockInstance.getMailboxLockMock).toHaveBeenCalledWith('INBOX');
+      expect(mockInstance.messageCopyMock).toHaveBeenCalledTimes(2);
+      expect(mockInstance.messageCopyMock).toHaveBeenNthCalledWith(1, 1, 'Labels/Trip', { uid: true });
+      expect(mockInstance.messageCopyMock).toHaveBeenNthCalledWith(2, 2, 'Labels/Trip', { uid: true });
+      expect(result).toEqual({
+        source: 'INBOX',
+        destination: 'Labels/Trip',
+        results: [
+          { uid: 1, status: 'copied', uidMap: { 1: 1001 } },
+          { uid: 2, status: 'copied', uidMap: { 2: 1002 } },
+        ],
+      });
+      expectNothingDestructive();
+    });
+
+    it('accepts a single UID and copies a duplicated UID only once', async () => {
+      await imapService.connect(mockAccount);
+
+      const single = await imapService.copyEmail(mockAccount.id, 'INBOX', 1, 'Labels/Trip');
+      expect(single.results).toHaveLength(1);
+
+      mockInstance.messageCopyMock.mockClear();
+      const dup = await imapService.copyEmail(mockAccount.id, 'INBOX', [2, 2], 'Labels/Trip');
+      expect(mockInstance.messageCopyMock).toHaveBeenCalledTimes(1);
+      expect(dup.results).toEqual([{ uid: 2, status: 'copied', uidMap: { 2: 1002 } }]);
+    });
+
+    it('omits uidMap when the server does not report COPYUID', async () => {
+      mockInstance.messageCopyMock.mockResolvedValueOnce({ path: 'INBOX', destination: 'Labels/Trip' });
+      await imapService.connect(mockAccount);
+
+      const result = await imapService.copyEmail(mockAccount.id, 'INBOX', 1, 'Labels/Trip');
+
+      expect(result.results).toEqual([{ uid: 1, status: 'copied' }]);
+    });
+
+    it('refuses a missing destination without copying or creating it', async () => {
+      await imapService.connect(mockAccount);
+
+      await expect(imapService.copyEmail(mockAccount.id, 'INBOX', 1, 'Labels/Nope'))
+        .rejects.toMatchObject({ reason: 'destination_not_found' });
+      expect(mockInstance.messageCopyMock).not.toHaveBeenCalled();
+      expectNothingDestructive();
+    });
+
+    it('refuses a missing source folder', async () => {
+      await imapService.connect(mockAccount);
+
+      await expect(imapService.copyEmail(mockAccount.id, 'Nope', 1, 'Labels/Trip'))
+        .rejects.toMatchObject({ reason: 'source_not_found' });
+      expect(mockInstance.messageCopyMock).not.toHaveBeenCalled();
+    });
+
+    it.each([['INBOX', 'INBOX'], ['INBOX', 'inbox'], ['Labels/Trip', 'Labels/Trip']])(
+      'refuses copying %s to %s (same folder)',
+      async (from, to) => {
+        await imapService.connect(mockAccount);
+
+        await expect(imapService.copyEmail(mockAccount.id, from, 1, to))
+          .rejects.toMatchObject({ reason: 'same_folder' });
+        expect(mockInstance.messageCopyMock).not.toHaveBeenCalled();
+      },
+    );
+
+    it('marks a UID missing from the source as failed without sending COPY for it', async () => {
+      sourceHas(1);
+      await imapService.connect(mockAccount);
+
+      const result = await imapService.copyEmail(mockAccount.id, 'INBOX', [1, 99], 'Labels/Trip');
+
+      expect(mockInstance.messageCopyMock).toHaveBeenCalledTimes(1);
+      expect(result.results[1]).toMatchObject({ uid: 99, status: 'failed', error: expect.stringContaining('not found') });
+    });
+
+    it('marks a server refusal as failed and carries on', async () => {
+      mockInstance.messageCopyMock.mockResolvedValueOnce(false); // NO, connection still usable
+      await imapService.connect(mockAccount);
+
+      const result = await imapService.copyEmail(mockAccount.id, 'All Mail', [1, 2], 'Labels/Trip');
+
+      expect(mockInstance.messageCopyMock).toHaveBeenCalledTimes(2);
+      expect(result.results.map(r => r.status)).toEqual(['failed', 'copied']);
+    });
+
+    it('stops at a dropped connection: uncertain, then not_attempted, never retried', async () => {
+      mockInstance.messageCopyMock
+        .mockResolvedValueOnce({ path: 'INBOX', destination: 'Labels/Trip' })
+        .mockImplementationOnce(async () => {
+          mockInstance.usable = false; // imapflow marks the client unusable, then returns false
+          return false;
+        });
+      await imapService.connect(mockAccount);
+
+      const result = await imapService.copyEmail(mockAccount.id, 'INBOX', [1, 2, 3], 'Labels/Trip');
+
+      expect(mockInstance.messageCopyMock).toHaveBeenCalledTimes(2);
+      expect(result.results.map(r => r.status)).toEqual(['copied', 'uncertain', 'not_attempted']);
+      expect(result.results[1].error).toContain('may or may not have been copied');
+      expectNothingDestructive();
+    });
+
+    it('treats a thrown NoConnection as uncertain', async () => {
+      mockInstance.messageCopyMock.mockRejectedValueOnce(new Error('Connection not available'));
+      await imapService.connect(mockAccount);
+
+      const result = await imapService.copyEmail(mockAccount.id, 'INBOX', [1, 2], 'Labels/Trip');
+
+      expect(mockInstance.messageCopyMock).toHaveBeenCalledTimes(1);
+      expect(result.results.map(r => r.status)).toEqual(['uncertain', 'not_attempted']);
+    });
+
+    it('releases the mailbox lock', async () => {
+      const release = vi.fn();
+      mockInstance.getMailboxLockMock.mockResolvedValueOnce({ release });
+      await imapService.connect(mockAccount);
+
+      await imapService.copyEmail(mockAccount.id, 'INBOX', 1, 'Labels/Trip');
+
+      expect(release).toHaveBeenCalledTimes(1);
     });
   });
 
