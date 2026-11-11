@@ -18,6 +18,7 @@ class MockImapFlow {
   public messageDeleteMock = vi.fn().mockResolvedValue(undefined);
   public messageMoveMock = vi.fn().mockResolvedValue({ path: 'INBOX', destination: 'Archive', uidMap: new Map([[123, 456]]) });
   public mailboxCreateMock = vi.fn().mockResolvedValue({ path: 'NewFolder', created: true });
+  public mailboxRenameMock = vi.fn().mockImplementation((path: string, newPath: string) => Promise.resolve({ path, newPath }));
   public statusMock = vi.fn().mockResolvedValue({ messages: 10 });
   public usable = true;
   public onMock = vi.fn();
@@ -35,6 +36,7 @@ class MockImapFlow {
   messageDelete(uid: any, opts: any) { return this.messageDeleteMock(uid, opts); }
   messageMove(uid: any, target: any, opts: any) { return this.messageMoveMock(uid, target, opts); }
   mailboxCreate(path: any) { return this.mailboxCreateMock(path); }
+  mailboxRename(path: any, newPath: any) { return this.mailboxRenameMock(path, newPath); }
   status(name: string, opts: any) { return this.statusMock(name, opts); }
   on(event: string, handler: any) { return this.onMock(event, handler); }
 }
@@ -62,6 +64,7 @@ vi.mock('imapflow', () => {
         this.messageDelete = mockInstance.messageDelete.bind(mockInstance);
         this.messageMove = mockInstance.messageMove.bind(mockInstance);
         this.mailboxCreate = mockInstance.mailboxCreate.bind(mockInstance);
+        this.mailboxRename = mockInstance.mailboxRename.bind(mockInstance);
         this.status = mockInstance.status.bind(mockInstance);
         this.on = mockInstance.on.bind(mockInstance);
       }
@@ -810,6 +813,98 @@ describe('ImapService', () => {
 
       expect(mockInstance.mailboxCreateMock).not.toHaveBeenCalled();
       expect(result.destinationCreated).toBeUndefined();
+    });
+  });
+
+  describe('renameFolder', () => {
+    const folders = [
+      { path: 'INBOX', delimiter: '/' },
+      { path: 'Projects', delimiter: '/' },
+      { path: 'Projects/Acme', delimiter: '/' },
+      { path: 'Projects/Acme/2026', delimiter: '/' },
+      { path: 'ProjectsOld', delimiter: '/' },
+      { path: 'Clients', delimiter: '/' },
+    ];
+
+    beforeEach(() => {
+      mockInstance.listMock.mockResolvedValue(folders);
+    });
+
+    it('issues one RENAME and reports the children renamed with it', async () => {
+      await imapService.connect(mockAccount);
+
+      const result = await imapService.renameFolder(mockAccount.id, 'Projects', 'Work');
+
+      expect(mockInstance.mailboxRenameMock).toHaveBeenCalledTimes(1);
+      expect(mockInstance.mailboxRenameMock).toHaveBeenCalledWith('Projects', 'Work');
+      expect(result).toEqual({
+        oldPath: 'Projects',
+        newPath: 'Work',
+        renamedChildren: [
+          { oldPath: 'Projects/Acme', newPath: 'Work/Acme' },
+          { oldPath: 'Projects/Acme/2026', newPath: 'Work/Acme/2026' },
+        ],
+      });
+      // Never emulated with moves, creates or deletes.
+      expect(mockInstance.messageMoveMock).not.toHaveBeenCalled();
+      expect(mockInstance.messageDeleteMock).not.toHaveBeenCalled();
+      expect(mockInstance.mailboxCreateMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a missing source without sending RENAME', async () => {
+      await imapService.connect(mockAccount);
+
+      await expect(imapService.renameFolder(mockAccount.id, 'Nope', 'Work'))
+        .rejects.toMatchObject({ reason: 'source_not_found' });
+      expect(mockInstance.mailboxRenameMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses an occupied destination without sending RENAME', async () => {
+      await imapService.connect(mockAccount);
+
+      await expect(imapService.renameFolder(mockAccount.id, 'Projects', 'Clients'))
+        .rejects.toMatchObject({ reason: 'destination_exists' });
+      expect(mockInstance.mailboxRenameMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['INBOX', 'Old Inbox'],
+      ['inbox', 'Old Inbox'],
+      ['Projects', 'INBOX'],
+      ['Projects', 'Inbox'],
+    ])('refuses INBOX (%s -> %s) without sending RENAME', async (from, to) => {
+      await imapService.connect(mockAccount);
+
+      await expect(imapService.renameFolder(mockAccount.id, from, to))
+        .rejects.toMatchObject({ reason: 'inbox_not_supported' });
+      expect(mockInstance.mailboxRenameMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses renaming a folder to its own name', async () => {
+      await imapService.connect(mockAccount);
+
+      await expect(imapService.renameFolder(mockAccount.id, 'Projects', 'Projects'))
+        .rejects.toMatchObject({ reason: 'same_name' });
+      expect(mockInstance.mailboxRenameMock).not.toHaveBeenCalled();
+    });
+
+    it('reports a server NO as server_refused', async () => {
+      mockInstance.mailboxRenameMock.mockRejectedValueOnce(
+        Object.assign(new Error('Command failed'), { responseStatus: 'NO', responseText: 'Permission denied' }),
+      );
+      await imapService.connect(mockAccount);
+
+      await expect(imapService.renameFolder(mockAccount.id, 'Projects', 'Work'))
+        .rejects.toMatchObject({ reason: 'server_refused', message: expect.stringContaining('Permission denied') });
+    });
+
+    it('reports a dropped connection as outcome_unknown and does not retry', async () => {
+      mockInstance.mailboxRenameMock.mockRejectedValueOnce(new Error('Connection not available'));
+      await imapService.connect(mockAccount);
+
+      await expect(imapService.renameFolder(mockAccount.id, 'Projects', 'Work'))
+        .rejects.toMatchObject({ reason: 'outcome_unknown' });
+      expect(mockInstance.mailboxRenameMock).toHaveBeenCalledTimes(1);
     });
   });
 

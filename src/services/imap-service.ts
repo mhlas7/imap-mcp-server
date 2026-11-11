@@ -5,6 +5,7 @@ import type { AccountManager } from './account-manager.js';
 import { htmlToMarkdown, normalizeWhitespace } from './html-to-markdown.js';
 import { assertCredentialsResolved } from '../utils/env-credentials.js';
 import { matchesSearchCriteria, extractMessageIds } from '../utils/client-side-search.js';
+import { ImapOperationError } from '../utils/operation-error.js';
 
 /**
  * Upper bound on messages whose source is downloaded and parsed for a
@@ -171,6 +172,11 @@ export function parseRawHeaders(raw: Buffer | string): Record<string, string> {
   commit();
 
   return headers;
+}
+
+/** RFC 3501 §5.1: the name INBOX is case-insensitive. */
+function isInbox(path: string): boolean {
+  return path.trim().toUpperCase() === 'INBOX';
 }
 
 export class ImapService {
@@ -1473,6 +1479,80 @@ export class ImapService {
       }
       throw new Error(`Failed to create folder "${folderPath}": ${message}`);
     }
+  }
+
+  /**
+   * Rename a folder with a single IMAP RENAME (RFC 3501 §6.3.5).
+   *
+   * Refuses — without sending RENAME — when either name is INBOX (RENAME of
+   * INBOX has special semantics: it moves the messages and leaves INBOX
+   * empty), when the names are equal, when the source does not exist, or when
+   * the destination already exists. The destination check gives a clear error
+   * up front; the server also refuses to rename onto an existing mailbox.
+   *
+   * Child folders are renamed with their parent by the server. They are not
+   * moved or deleted one by one here, and nothing is emulated with MOVE or
+   * DELETE. `renamedChildren` lists the child paths the server is expected to
+   * have renamed, derived from the folder list taken before the rename.
+   */
+  async renameFolder(
+    accountId: string,
+    folder: string,
+    newName: string,
+  ): Promise<{
+    oldPath: string;
+    newPath: string;
+    renamedChildren: Array<{ oldPath: string; newPath: string }>;
+  }> {
+    if (isInbox(folder) || isInbox(newName)) {
+      throw new ImapOperationError(
+        'inbox_not_supported',
+        'Renaming INBOX, or renaming a folder to INBOX, is not supported',
+      );
+    }
+    if (folder === newName) {
+      throw new ImapOperationError('same_name', `"${folder}" already has that name`);
+    }
+
+    const client = await this.ensureConnected(accountId);
+    const list = await client.list();
+
+    const source = list.find(f => f.path === folder);
+    if (!source) {
+      throw new ImapOperationError('source_not_found', `Folder "${folder}" does not exist`);
+    }
+    if (list.some(f => f.path === newName)) {
+      throw new ImapOperationError(
+        'destination_exists',
+        `A folder named "${newName}" already exists; it was not replaced`,
+      );
+    }
+
+    const delimiter = source.delimiter;
+    const renamedChildren = delimiter
+      ? list
+          .filter(f => f.path.startsWith(folder + delimiter))
+          .map(f => ({ oldPath: f.path, newPath: newName + f.path.slice(folder.length) }))
+      : [];
+
+    try {
+      await client.mailboxRename(folder, newName);
+    } catch (err) {
+      const e = err as { responseStatus?: string; responseText?: string; message?: string };
+      if (e.responseStatus === 'NO' || e.responseStatus === 'BAD') {
+        throw new ImapOperationError(
+          'server_refused',
+          `Server refused to rename "${folder}" to "${newName}": ${e.responseText || e.message}`,
+        );
+      }
+      throw new ImapOperationError(
+        'outcome_unknown',
+        `Renaming "${folder}" to "${newName}" did not complete (${e.message ?? String(err)}). ` +
+          'The connection may have dropped after the command was sent; check imap_list_folders before retrying.',
+      );
+    }
+
+    return { oldPath: folder, newPath: newName, renamedChildren };
   }
 
   /**

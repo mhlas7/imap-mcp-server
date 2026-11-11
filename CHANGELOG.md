@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `imap_rename_folder` renames a folder in place with a single IMAP `RENAME` (#221). It takes the exact current path and the new path. It refuses, without sending `RENAME`, when the source is missing, when the destination already exists (never replaced or merged), or when either name is INBOX. Child folders are renamed with their parent and listed in `renamedChildren`. Failures return `success: false` with a `reason`. Nothing is emulated with moves or deletes. The tool is a write tool, so it is not available under `IMAP_MCP_READ_ONLY`. On Proton Mail Bridge, renaming `Labels/<name>` renames the label. Tests in `tests/folder-tools-rename.test.ts`, `tests/imap-service.test.ts` and `tests/tool-access.test.ts`.
+
 ## [2.2.0] - 2026-10-09
 
 No tool was renamed, and no existing input or output shape changed. The new `from` and `allowedFrom` fields are optional. Local use of the setup wizard is unchanged.
