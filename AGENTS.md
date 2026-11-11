@@ -33,7 +33,7 @@ working in this repository.
 - **Tools** (`src/tools/`), grouped by area:
   - `account-tools.ts` — add / update / list / remove / connect / disconnect / test.
   - `email-tools.ts` — search, get, latest, send, reply, forward, save draft,
-    mark read/unread, delete, bulk delete, move, attachments, upload, threads.
+    mark read/unread, delete, bulk delete, move, copy, attachments, upload, threads.
   - `folder-tools.ts` — list, status, create, unread counts.
   - `spam-tools.ts` — spam analysis, domain stats, allow/deny lists.
 - **Web setup wizard** — `src/web/server.ts` (Express) serves `public/` for
@@ -58,7 +58,7 @@ npm run setup        # launch the web setup wizard
 ```
 
 Always run `npm run build` **and** `npm test` before committing changes that
-touch `src/`. Keep the suite green (currently 451 tests).
+touch `src/`. Keep the suite green (currently 482 tests).
 
 > Note: `npm run lint` (`tsc --noEmit`) is memory-hungry on this project — the
 > MCP SDK's `registerTool` generics are deep enough to surface a pre-existing

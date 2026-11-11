@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `imap_copy_email` copies messages to another folder in the same account with IMAP `COPY` (#222). The original stays in place, and no `MOVE`, `\Deleted` flag, `EXPUNGE` or `DELETE` is issued. The tool takes an explicit source folder, UIDs and an existing destination. It refuses, without copying, when the destination is missing (it is never created), when the source is missing, or when source and destination are the same folder. UIDs are checked against the source first, so a missing UID reports `failed` instead of a silent no-op. Each UID reports `copied`, `failed`, `uncertain` or `not_attempted`, with `uidMap` only when the server provides one. After the first uncertain outcome (connection lost mid-copy) the tool stops and nothing is retried, so a copy is never duplicated. The tool is a write tool, so it is not available under `IMAP_MCP_READ_ONLY`. On Proton Mail Bridge and Gmail, copying into a label folder adds the label. Providers with exclusive folders may turn a copy into a move: on Proton Mail Bridge, copying into `Folders/<name>` removes the message from its original folder once Bridge syncs. Tests in `tests/email-tools-copy.test.ts`, `tests/imap-service.test.ts` and `tests/tool-access.test.ts`.
+
 ## [2.2.0] - 2026-10-09
 
 No tool was renamed, and no existing input or output shape changed. The new `from` and `allowedFrom` fields are optional. Local use of the setup wizard is unchanged.

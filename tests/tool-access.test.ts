@@ -15,6 +15,7 @@ const DESTRUCTIVE_TOOLS = [
   'imap_reply_to_email',
   'imap_forward_email',
   'imap_move_email',
+  'imap_copy_email',
   'imap_mark_as_read',
   'imap_mark_as_unread',
   'imap_flag_email',
@@ -158,6 +159,12 @@ describe('registerTools gating', () => {
     expect(new Set(names)).toEqual(
       new Set(['imap_search_emails', 'imap_get_email'])
     );
+  });
+
+  it('registers imap_copy_email when unrestricted or allowlisted, never in read-only mode', () => {
+    expect(registeredToolsFor({})).toContain('imap_copy_email');
+    expect(registeredToolsFor({ IMAP_MCP_READ_ONLY: 'true' })).not.toContain('imap_copy_email');
+    expect(registeredToolsFor({ IMAP_MCP_ENABLED_TOOLS: 'copy_email' })).toEqual(['imap_copy_email']);
   });
 
   it('silently ignores unknown tool names in the allowlist', () => {
