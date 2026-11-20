@@ -58,7 +58,7 @@ npm run setup        # launch the web setup wizard
 ```
 
 Always run `npm run build` **and** `npm test` before committing changes that
-touch `src/`. Keep the suite green (currently 502 tests).
+touch `src/`. Keep the suite green (currently 594 tests).
 
 > Note: `npm run lint` (`tsc --noEmit`) is memory-hungry on this project — the
 > MCP SDK's `registerTool` generics are deep enough to surface a pre-existing
@@ -103,3 +103,18 @@ touch `src/`. Keep the suite green (currently 502 tests).
   tells an LLM **when and how** to use it.
 - Match the surrounding code style; keep error handling and connection cleanup
   consistent with existing tools.
+- Provider `copyBehavior` entries (`src/providers/email-providers.ts`) come
+  from testing COPY against the real provider, following README → "Adding a
+  provider's copy behaviour". An agent helping with that tests only on scratch
+  folders and a message the user picked, never on other mail without the
+  user's go-ahead, and puts the test results in the PR description, not in
+  code comments.
+- `src/utils/copy-policy.ts` refuses Trash/Junk and every other special-use
+  role (from `specialUse` or the LIST flags) before any `copyBehavior` rule,
+  and `acknowledgeSourceMayChange` only answers `preservation_unverified`.
+  Keep that order; path prefixes are a fallback for folders without a role.
+- Select mailboxes only through `client.getMailboxLock()`, never a bare
+  `client.mailboxOpen()`. The lock is what serializes selection on a pooled
+  connection: `renameFolder` holds a read-only INBOX lock so the source cannot
+  be re-selected before `RENAME`, which imapflow would otherwise deselect with
+  an expunging `CLOSE` on servers without `UNSELECT`.

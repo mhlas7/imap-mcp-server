@@ -863,12 +863,20 @@ export function emailTools(
   // Copy email to another folder (#222)
   server.registerTool('imap_copy_email', {
     description:
-      'Copy one or more emails to another folder in the same account with IMAP COPY. The original stays where it is, ' +
-      'untouched (nothing is moved, flagged or deleted). Use this instead of imap_move_email when the message must stay ' +
-      'in its current folder. On servers that expose labels as folders (Proton Mail Bridge "Labels/<name>", Gmail labels), ' +
-      'copying into a label folder adds that label. On providers whose folders are exclusive (a message lives in only one), ' +
-      'the server may turn a copy into a move: on Proton Mail Bridge, copying into "Folders/<name>" takes the message out of its ' +
-      'current folder once Bridge syncs, even though the copy reports success. The destination must already exist (use imap_create_folder first). ' +
+      'Copy one or more emails to another folder in the same account with IMAP COPY. Standard IMAP COPY keeps the original ' +
+      'in place, but some providers treat folders as exclusive locations and turn a copy into a move, so destinations are ' +
+      'checked first against the account\'s provider (its provider field, or recognised by IMAP host; see ' +
+      'imap_list_accounts) and the response says which rule let the copy through (preservation: "label_destination" or ' +
+      '"acknowledged"). These are rules about the provider, not a guarantee about the server. ' +
+      'On every server, system folders (Sent, Drafts, Archive, All Mail, Starred/Flagged, Important, by the server\'s ' +
+      'special-use role whatever their name) are refused, and so are Trash and Spam; use imap_move_email or ' +
+      'imap_delete_email for those. ' +
+      'Proton Mail Bridge: only "Labels/<name>" is allowed (it adds the label); "Folders/<name>" and INBOX are refused ' +
+      'because a copy there can move the message. ' +
+      'Gmail: user labels are allowed (it adds the label); "[Gmail]/..." system folders and INBOX are refused. ' +
+      'For any other provider, or an account whose provider is not identified, the copy is refused with reason ' +
+      '"preservation_unverified" unless you pass ' +
+      'acknowledgeSourceMayChange: true. The destination must already exist (use imap_create_folder first). ' +
       'Each UID gets a status: "copied", "failed" (definitely not copied), "uncertain" (the connection dropped mid-copy, so ' +
       'a copy may exist) or "not_attempted" (skipped after an uncertain one). Never repeat a call for "uncertain" UIDs ' +
       'without first checking the destination folder (e.g. imap_find_email_by_message_id), or the message may be duplicated.',
@@ -876,12 +884,20 @@ export function emailTools(
       ...accountSelector,
       folder: z.string().describe('Source folder holding the UIDs (exact path from imap_list_folders). Required: UIDs are only meaningful within their own folder.'),
       uid: uidList('Email UID, or array of UIDs, in the source folder. Duplicate UIDs are copied once.').nonoptional(),
-      targetFolder: z.string().describe('Destination folder (exact path; must already exist and differ from the source), e.g. "Labels/2026 Thailand" or "Archive"'),
+      targetFolder: z.string().describe('Destination folder (exact path; must already exist and differ from the source), e.g. "Labels/2026 Thailand"'),
+      acknowledgeSourceMayChange: z.boolean().optional().describe(
+        'Only after a refusal with reason "preservation_unverified" (provider without a copy rule, or not identified). Set true to accept ' +
+        'that the original might leave its folder if this server treats folders as exclusive. Leave unset when the user ' +
+        'needs the message to stay where it is. If the account is actually Proton or Gmail, set its provider with ' +
+        'imap_update_account instead. Never overrides any other refusal (system folders, Trash/Spam, exclusive folders).',
+      ),
     }
-  }, async ({ accountId: rawAccountId, accountName, folder, uid, targetFolder }) => {
+  }, async ({ accountId: rawAccountId, accountName, folder, uid, targetFolder, acknowledgeSourceMayChange }) => {
     const accountId = accountManager.resolveAccountId(rawAccountId, accountName);
     try {
-      const { results } = await imapService.copyEmail(accountId, folder, uid, targetFolder);
+      const { results, provider, preservation } = await imapService.copyEmail(
+        accountId, folder, uid, targetFolder, { acknowledgeSourceMayChange },
+      );
       const count = (status: string) => results.filter(r => r.status === status).length;
       const copiedCount = count('copied');
       const failedCount = count('failed');
@@ -899,6 +915,8 @@ export function emailTools(
               (uncertainCount > 0 ? '; check the destination before retrying the uncertain ones' : ''),
             source: folder,
             destination: targetFolder,
+            provider,
+            preservation,
             copiedCount,
             failedCount,
             uncertainCount,

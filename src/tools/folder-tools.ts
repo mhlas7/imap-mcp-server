@@ -136,6 +136,8 @@ export function folderTools(
       'so their paths change too: renaming "Projects" to "Clients" turns "Projects/Acme" into "Clients/Acme" ' +
       '(see renamedChildren). Refuses when the source does not exist, when a folder with the new name already ' +
       'exists (it is never replaced or merged), and when either name is INBOX. ' +
+      'The rename never expunges: if the folder is currently open it is first deselected by opening INBOX read-only, ' +
+      'never with CLOSE, so messages flagged \\Deleted are not removed. ' +
       'On servers that expose labels as folders (Proton Mail Bridge "Labels/<name>"), renaming the folder renames the label. ' +
       'Use imap_list_folders first to get the exact current path and the hierarchy delimiter.',
     inputSchema: {

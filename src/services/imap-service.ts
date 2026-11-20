@@ -4,6 +4,8 @@ import { ImapAccount, EmailMessage, EmailContent, EmailBodyFormat, EmailLocation
 import type { AccountManager } from './account-manager.js';
 import { htmlToMarkdown, normalizeWhitespace } from './html-to-markdown.js';
 import { assertCredentialsResolved } from '../utils/env-credentials.js';
+import { classifyCopyDestination } from '../utils/copy-policy.js';
+import { resolveAccountProvider } from '../providers/email-providers.js';
 import { matchesSearchCriteria, extractMessageIds } from '../utils/client-side-search.js';
 import { ImapOperationError } from '../utils/operation-error.js';
 
@@ -148,10 +150,28 @@ export interface CopyEmailResultItem {
   error?: string;
 }
 
+/**
+ * Which rule let the copy through: `label_destination` when the provider's
+ * registry rule treats the destination as a label folder (a rule about the
+ * provider, not a guarantee about this server), `acknowledged` when no rule
+ * applies and the caller accepted with acknowledgeSourceMayChange that the
+ * original might leave its folder.
+ */
+export type CopyPreservation = 'label_destination' | 'acknowledged';
+
 export interface CopyEmailResult {
   source: string;
   destination: string;
+  /** Registry id of the account's provider, or null when none was identified. */
+  provider: string | null;
+  preservation: CopyPreservation;
   results: CopyEmailResultItem[];
+}
+
+function uncertainCopyError(err?: unknown): string {
+  const detail = err instanceof Error ? ` (${err.message})` : '';
+  return `The connection dropped during the copy${detail}; the message may or may not have been copied. ` +
+    'Check the destination folder before trying again.';
 }
 
 export interface MoveEmailBatchResult {
@@ -203,12 +223,6 @@ export function parseRawHeaders(raw: Buffer | string): Record<string, string> {
 /** RFC 3501 §5.1: the name INBOX is case-insensitive. */
 function isInbox(path: string): boolean {
   return path.trim().toUpperCase() === 'INBOX';
-}
-
-function uncertainCopyError(err?: unknown): string {
-  const detail = err instanceof Error ? ` (${err.message})` : '';
-  return `The connection dropped during the copy${detail}; the message may or may not have been copied. ` +
-    'Check the destination folder before trying again.';
 }
 
 export class ImapService {
@@ -383,9 +397,21 @@ export class ImapService {
     }));
   }
 
+  /**
+   * Selects a folder and returns imapflow's mailbox object for it.
+   *
+   * Selection goes through the mailbox lock, never a bare mailboxOpen(), so it
+   * queues behind any operation that holds the lock. renameFolder relies on
+   * this: while it holds its lock, nothing can select the folder it renames.
+   */
   async selectFolder(accountId: string, folderName: string): Promise<any> {
     const client = await this.ensureConnected(accountId);
-    return await client.mailboxOpen(folderName);
+    const lock = await client.getMailboxLock(folderName);
+    try {
+      return client.mailbox;
+    } finally {
+      lock.release();
+    }
   }
 
   async getFolderStatus(accountId: string, folderName: string): Promise<{
@@ -1485,12 +1511,16 @@ export class ImapService {
 
   /**
    * Copy one or more emails from `folder` to `targetFolder` within the same
-   * account with IMAP (UID) COPY. The originals are never touched: no MOVE,
-   * STORE \Deleted, EXPUNGE or DELETE is issued.
+   * account with IMAP (UID) COPY. This method never issues MOVE, STORE
+   * \Deleted, EXPUNGE or DELETE itself, but some providers turn a COPY into a
+   * move server-side (Proton Mail Bridge exclusive folders), so the
+   * destination first goes through the copy policy in utils/copy-policy.ts.
    *
    * Refuses (throws ImapOperationError, nothing copied) when source and
-   * destination are the same folder or when either folder does not exist. The
-   * destination is never created.
+   * destination are the same folder, when either folder does not exist, when
+   * the policy refuses the destination, or when the server is not recognised
+   * and `options.acknowledgeSourceMayChange` is not true. The destination is
+   * never created.
    *
    * UIDs are deduplicated and checked against the source folder first, since a
    * UID COPY of a missing UID succeeds silently on most servers. Each present
@@ -1504,6 +1534,7 @@ export class ImapService {
     folder: string,
     uids: number | number[],
     targetFolder: string,
+    options: { acknowledgeSourceMayChange?: boolean } = {},
   ): Promise<CopyEmailResult> {
     const uidList = [...new Set(Array.isArray(uids) ? uids : [uids])];
     if (uidList.length === 0) {
@@ -1528,6 +1559,40 @@ export class ImapService {
       throw new ImapOperationError(
         'destination_not_found',
         `Destination folder "${targetFolder}" does not exist; create it first with imap_create_folder`,
+      );
+    }
+
+    // Copy policy: refuse system folders (by special-use role, from the
+    // parsed specialUse or the LIST flags) and destinations the provider's
+    // rule marks as exclusive; for providers without a copyBehavior require
+    // the caller's acknowledgment. Runs before the lock, so nothing is sent on
+    // refusal.
+    const account = this.connections.get(accountId)?.account;
+    const provider = account ? resolveAccountProvider(account) : undefined;
+    const destinationEntry = list.find(f => f.path === targetFolder)
+      ?? (isInbox(targetFolder) ? list.find(f => isInbox(f.path)) : undefined);
+    const verdict = classifyCopyDestination({
+      providerName: provider?.displayName,
+      behavior: provider?.copyBehavior,
+      destination: targetFolder,
+      specialUse: destinationEntry?.specialUse,
+      attributes: Array.from(destinationEntry?.flags ?? []),
+    });
+    let preservation: CopyPreservation;
+    if (verdict.kind === 'refused') {
+      throw new ImapOperationError(verdict.reason, verdict.message);
+    } else if (verdict.kind === 'label_destination') {
+      preservation = 'label_destination';
+    } else if (options.acknowledgeSourceMayChange === true) {
+      preservation = 'acknowledged';
+    } else {
+      throw new ImapOperationError(
+        'preservation_unverified',
+        (provider ? `Copy behaviour on ${provider.displayName} has not been verified. ` : 'This account\'s provider is not identified (see the account\'s provider setting). ') +
+          'Standard IMAP COPY keeps the original in place, ' +
+          'but some providers treat folders as exclusive locations and move the message instead. ' +
+          'Call again with acknowledgeSourceMayChange: true only if it is acceptable that the original might leave ' +
+          `"${folder}"; otherwise do not copy.`,
       );
     }
 
@@ -1580,7 +1645,7 @@ export class ImapService {
         }
       }
 
-      return { source: folder, destination: targetFolder, results };
+      return { source: folder, destination: targetFolder, provider: provider?.id ?? null, preservation, results };
     } finally {
       lock.release();
     }
@@ -1670,9 +1735,27 @@ export class ImapService {
           .map(f => ({ oldPath: f.path, newPath: newName + f.path.slice(folder.length) }))
       : [];
 
+    // If the source is selected, imapflow deselects it with CLOSE when the
+    // server lacks UNSELECT, expunging \Deleted messages. A read-only INBOX
+    // lock (EXAMINE, which never expunges) deselects the source, and because
+    // every selection in this service goes through the mailbox lock, nothing
+    // can select the source again until the lock is released, including
+    // while imapflow awaits its pre-command IDLE check inside mailboxRename.
+    const lock = await client.getMailboxLock('INBOX', { readOnly: true });
+    let renamed: unknown;
     try {
-      await client.mailboxRename(folder, newName);
+      const selected = (client as { mailbox?: { path?: string } | false }).mailbox;
+      if (selected && selected.path === folder) {
+        throw new ImapOperationError(
+          'source_selected',
+          `"${folder}" is still the selected mailbox; refusing to rename it, because deselecting it could expunge messages flagged \\Deleted`,
+        );
+      }
+      renamed = await client.mailboxRename(folder, newName);
     } catch (err) {
+      if (err instanceof ImapOperationError) {
+        throw err;
+      }
       const e = err as { responseStatus?: string; responseText?: string; message?: string };
       if (e.responseStatus === 'NO' || e.responseStatus === 'BAD') {
         throw new ImapOperationError(
@@ -1684,6 +1767,17 @@ export class ImapService {
         'outcome_unknown',
         `Renaming "${folder}" to "${newName}" did not complete (${e.message ?? String(err)}). ` +
           'The connection may have dropped after the command was sent; check imap_list_folders before retrying.',
+      );
+    } finally {
+      lock.release();
+    }
+
+    // imapflow returns undefined, without sending RENAME, when the connection
+    // is not in an authenticated state.
+    if (!renamed) {
+      throw new ImapOperationError(
+        'not_connected',
+        `The connection was not ready, so "${folder}" was not renamed; nothing was sent to the server`,
       );
     }
 

@@ -137,6 +137,12 @@ describe('registerTools gating', () => {
     delete process.env.IMAP_MCP_READ_ONLY;
   });
 
+  it('registers imap_copy_email when unrestricted or allowlisted, never in read-only mode', () => {
+    expect(registeredToolsFor({})).toContain('imap_copy_email');
+    expect(registeredToolsFor({ IMAP_MCP_READ_ONLY: 'true' })).not.toContain('imap_copy_email');
+    expect(registeredToolsFor({ IMAP_MCP_ENABLED_TOOLS: 'copy_email' })).toEqual(['imap_copy_email']);
+  });
+
   it('registers ALL tools when unrestricted', () => {
     const names = registeredToolsFor({});
     // Sanity: the full surface is large and includes destructive tools.
@@ -166,12 +172,6 @@ describe('registerTools gating', () => {
     expect(registeredToolsFor({})).toContain('imap_rename_folder');
     expect(registeredToolsFor({ IMAP_MCP_READ_ONLY: 'true' })).not.toContain('imap_rename_folder');
     expect(registeredToolsFor({ IMAP_MCP_ENABLED_TOOLS: 'rename_folder' })).toEqual(['imap_rename_folder']);
-  });
-
-  it('registers imap_copy_email when unrestricted or allowlisted, never in read-only mode', () => {
-    expect(registeredToolsFor({})).toContain('imap_copy_email');
-    expect(registeredToolsFor({ IMAP_MCP_READ_ONLY: 'true' })).not.toContain('imap_copy_email');
-    expect(registeredToolsFor({ IMAP_MCP_ENABLED_TOOLS: 'copy_email' })).toEqual(['imap_copy_email']);
   });
 
   it('silently ignores unknown tool names in the allowlist', () => {
