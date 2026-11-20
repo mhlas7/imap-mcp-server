@@ -866,11 +866,13 @@ export function emailTools(
       'Copy one or more emails to another folder in the same account with IMAP COPY. Standard IMAP COPY keeps the original ' +
       'in place, but some providers treat folders as exclusive locations and turn a copy into a move, so destinations are ' +
       'checked first against the account\'s provider (its provider field, or recognised by IMAP host; see ' +
-      'imap_list_accounts) and the response says which rule let the copy through (preservation: "label_destination" or ' +
+      'imap_list_accounts) and the response says which rule let the copy through (copyRule: "label_destination" or ' +
       '"acknowledged"). These are rules about the provider, not a guarantee about the server. ' +
+      'Folders that only group others (\\Noselect, e.g. "[Gmail]" or "Labels") are refused as source or destination. ' +
       'On every server, system folders (Sent, Drafts, Archive, All Mail, Starred/Flagged, Important, by the server\'s ' +
       'special-use role whatever their name) are refused, and so are Trash and Spam; use imap_move_email or ' +
-      'imap_delete_email for those. ' +
+      'imap_delete_email for those. Copying out of Trash or Spam is refused too (on Gmail it would restore the message); ' +
+      'restore with imap_move_email first. ' +
       'Proton Mail Bridge: only "Labels/<name>" is allowed (it adds the label); "Folders/<name>" and INBOX are refused ' +
       'because a copy there can move the message. ' +
       'Gmail: user labels are allowed (it adds the label); "[Gmail]/..." system folders and INBOX are refused. ' +
@@ -883,7 +885,7 @@ export function emailTools(
     inputSchema: {
       ...accountSelector,
       folder: z.string().describe('Source folder holding the UIDs (exact path from imap_list_folders). Required: UIDs are only meaningful within their own folder.'),
-      uid: uidList('Email UID, or array of UIDs, in the source folder. Duplicate UIDs are copied once.').nonoptional(),
+      uid: uidList('Email UID, or array of UIDs, in the source folder: positive integers, at most 1000 per call. Duplicate UIDs are copied once.').nonoptional(),
       targetFolder: z.string().describe('Destination folder (exact path; must already exist and differ from the source), e.g. "Labels/2026 Thailand"'),
       acknowledgeSourceMayChange: z.boolean().optional().describe(
         'Only after a refusal with reason "preservation_unverified" (provider without a copy rule, or not identified). Set true to accept ' +
@@ -895,7 +897,7 @@ export function emailTools(
   }, async ({ accountId: rawAccountId, accountName, folder, uid, targetFolder, acknowledgeSourceMayChange }) => {
     const accountId = accountManager.resolveAccountId(rawAccountId, accountName);
     try {
-      const { results, provider, preservation } = await imapService.copyEmail(
+      const { results, provider, copyRule } = await imapService.copyEmail(
         accountId, folder, uid, targetFolder, { acknowledgeSourceMayChange },
       );
       const count = (status: string) => results.filter(r => r.status === status).length;
@@ -916,7 +918,7 @@ export function emailTools(
             source: folder,
             destination: targetFolder,
             provider,
-            preservation,
+            copyRule,
             copiedCount,
             failedCount,
             uncertainCount,

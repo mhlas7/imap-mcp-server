@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyCopyDestination } from '../src/utils/copy-policy.js';
+import { classifyCopyDestination, isTrashOrJunk, isUnselectable } from '../src/utils/copy-policy.js';
 import { getProviderById, resolveAccountProvider, accountProviderIds } from '../src/providers/email-providers.js';
 
 const behaviorOf = (id: string) => getProviderById(id)?.copyBehavior;
@@ -55,6 +55,30 @@ describe('classifyCopyDestination with the registry copyBehavior', () => {
     if (reason) {
       expect(verdict).toMatchObject({ reason, message: expect.stringContaining(destination) });
     }
+  });
+
+  it.each([
+    ['gmail', '[Gmail]', ['\\HasChildren', '\\NonExistent', '\\Noselect']],
+    ['gmail', 'Projects', ['\\NoSelect']],
+    ['protonmail', 'Labels', ['\\Noselect', '\\Unmarked']],
+    ['protonmail', 'Folders', ['\\Noselect']],
+    [undefined, 'INBOX.Archive', ['\\NonExistent']],
+  ] as const)('%s: refuses unselectable "%s" before any other rule', (id, destination, attributes) => {
+    expect(classifyCopyDestination({ behavior: id ? behaviorOf(id) : undefined, destination, attributes: [...attributes] }))
+      .toMatchObject({ kind: 'refused', reason: 'destination_not_selectable' });
+  });
+
+  it('isTrashOrJunk reads specialUse or the LIST flags', () => {
+    expect(isTrashOrJunk('\\Trash', undefined)).toBe(true);
+    expect(isTrashOrJunk(undefined, ['\\HasNoChildren', '\\JUNK'])).toBe(true);
+    expect(isTrashOrJunk('\\Sent', ['\\Sent'])).toBe(false);
+    expect(isTrashOrJunk(undefined, undefined)).toBe(false);
+  });
+
+  it('isUnselectable reads the LIST flags case-insensitively', () => {
+    expect(isUnselectable(['\\NOSELECT'])).toBe(true);
+    expect(isUnselectable(['\\HasNoChildren'])).toBe(false);
+    expect(isUnselectable(undefined)).toBe(false);
   });
 
   it('refuses the owner\'s Gmail examples as system folders', () => {

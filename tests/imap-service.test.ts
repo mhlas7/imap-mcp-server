@@ -723,6 +723,9 @@ describe('ImapService', () => {
       { path: 'All Mail', delimiter: '/', flags: new Set(['\\All']) },
       { path: 'Archive', delimiter: '/', specialUse: '\\Archive' },
       { path: 'Trash', delimiter: '/', specialUse: '\\Trash' },
+      { path: 'Spam', delimiter: '/', specialUse: '\\Junk' },
+      // Role only in the LIST flags.
+      { path: 'Junk', delimiter: '/', flags: new Set(['\\Junk']) },
       { path: 'Folders', delimiter: '/', flags: new Set(['\\Noselect']) },
       { path: 'Folders/Receipts', delimiter: '/' },
       { path: 'Labels', delimiter: '/', flags: new Set(['\\Noselect']) },
@@ -763,7 +766,7 @@ describe('ImapService', () => {
         source: 'INBOX',
         destination: 'Labels/Trip',
         provider: 'protonmail',
-        preservation: 'label_destination',
+        copyRule: 'label_destination',
         results: [
           { uid: 1, status: 'copied', uidMap: { 1: 1001 } },
           { uid: 2, status: 'copied', uidMap: { 2: 1002 } },
@@ -807,6 +810,49 @@ describe('ImapService', () => {
 
       await expect(imapService.copyEmail(mockAccount.id, 'Nope', 1, 'Labels/Trip'))
         .rejects.toMatchObject({ reason: 'source_not_found' });
+      expect(mockInstance.messageCopyMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [[0], 'invalid_uids'],
+      [[-1], 'invalid_uids'],
+      [[1.5], 'invalid_uids'],
+      [[Number.NaN], 'invalid_uids'],
+      [[1, 2 ** 53], 'invalid_uids'],
+      [Array.from({ length: 1001 }, (_, i) => i + 1), 'too_many_uids'],
+    ])('refuses UIDs %# as %s before connecting', async (uids, reason) => {
+      await imapService.connect(mockAccount);
+      mockInstance.listMock.mockClear();
+
+      await expect(imapService.copyEmail(mockAccount.id, 'INBOX', uids, 'Labels/Trip'))
+        .rejects.toMatchObject({ reason });
+      expect(mockInstance.listMock).not.toHaveBeenCalled();
+      expect(mockInstance.messageCopyMock).not.toHaveBeenCalled();
+    });
+
+    it('accepts exactly 1000 UIDs, counting duplicates once', async () => {
+      sourceHas(1);
+      await imapService.connect(mockAccount);
+
+      const uids = [...Array.from({ length: 1000 }, (_, i) => i + 1), 1, 2];
+      const result = await imapService.copyEmail(mockAccount.id, 'INBOX', uids, 'Labels/Trip');
+
+      expect(result.results).toHaveLength(1000);
+    });
+
+    it.each([
+      ['Trash', 'Labels/Trip', 'source_is_trash_or_junk'],
+      ['Spam', 'Labels/Trip', 'source_is_trash_or_junk'],
+      ['Junk', 'Labels/Trip', 'source_is_trash_or_junk'],
+      ['Labels', 'Labels/Trip', 'source_not_selectable'],
+      ['INBOX', 'Labels', 'destination_not_selectable'],
+      ['INBOX', 'Folders', 'destination_not_selectable'],
+    ])('refuses %s → %s as %s, sending nothing', async (from, to, reason) => {
+      await imapService.connect(mockAccount);
+
+      await expect(imapService.copyEmail(mockAccount.id, from, 1, to, { acknowledgeSourceMayChange: true }))
+        .rejects.toMatchObject({ reason });
+      expect(mockInstance.getMailboxLockMock).not.toHaveBeenCalled();
       expect(mockInstance.messageCopyMock).not.toHaveBeenCalled();
     });
 
@@ -929,14 +975,14 @@ describe('ImapService', () => {
           expectNothingSent();
         });
 
-        it('copies with acknowledgeSourceMayChange and reports preservation "acknowledged"', async () => {
+        it('copies with acknowledgeSourceMayChange and reports copyRule "acknowledged"', async () => {
           await imapService.connect(mockAccount);
 
           const result = await imapService.copyEmail(
             mockAccount.id, 'INBOX', 1, 'INBOX.Projects', { acknowledgeSourceMayChange: true },
           );
 
-          expect(result).toMatchObject({ provider: null, preservation: 'acknowledged' });
+          expect(result).toMatchObject({ provider: null, copyRule: 'acknowledged' });
           expect(result.results).toEqual([{ uid: 1, status: 'copied', uidMap: { 1: 1001 } }]);
           expectNothingDestructive();
         });
@@ -971,12 +1017,12 @@ describe('ImapService', () => {
           ]);
         });
 
-        it('copies into a user label with preservation "label_destination"', async () => {
+        it('copies into a user label with copyRule "label_destination"', async () => {
           await imapService.connect(mockAccount);
 
           const result = await imapService.copyEmail(mockAccount.id, 'INBOX', 1, 'Trip');
 
-          expect(result).toMatchObject({ provider: 'gmail', preservation: 'label_destination' });
+          expect(result).toMatchObject({ provider: 'gmail', copyRule: 'label_destination' });
           expect(mockInstance.messageCopyMock).toHaveBeenCalledTimes(1);
         });
 

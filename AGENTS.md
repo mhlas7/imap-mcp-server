@@ -58,7 +58,7 @@ npm run setup        # launch the web setup wizard
 ```
 
 Always run `npm run build` **and** `npm test` before committing changes that
-touch `src/`. Keep the suite green (currently 594 tests).
+touch `src/`. Keep the suite green (currently 619 tests).
 
 > Note: `npm run lint` (`tsc --noEmit`) is memory-hungry on this project — the
 > MCP SDK's `registerTool` generics are deep enough to surface a pre-existing
@@ -113,6 +113,8 @@ touch `src/`. Keep the suite green (currently 594 tests).
   role (from `specialUse` or the LIST flags) before any `copyBehavior` rule,
   and `acknowledgeSourceMayChange` only answers `preservation_unverified`.
   Keep that order; path prefixes are a fallback for folders without a role.
+  `ImapService.copyEmail` also refuses `\Noselect` and Trash/Junk *sources*
+  before the policy runs.
 - Select mailboxes only through `client.getMailboxLock()`, never a bare
   `client.mailboxOpen()`. The lock is what serializes selection on a pooled
   connection: `renameFolder` holds a read-only INBOX lock so the source cannot

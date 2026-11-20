@@ -554,7 +554,8 @@ sending, drafts, replies, and forwards.
   Parameters:
   - accountId: Account ID
   - folder: Source folder (required, no default)
-  - uid: Email UID, or an array of UIDs (duplicates are copied once)
+  - uid: Email UID, or an array of UIDs: positive integers, at most 1000
+      per call (duplicates are copied once)
   - targetFolder: Destination folder. Must already exist and differ from
       the source; it is never created.
   - acknowledgeSourceMayChange: Optional. Only needed on servers the tool
@@ -564,7 +565,7 @@ sending, drafts, replies, and forwards.
   - success (all copied), partial (some copied), uncertain (at least one
       outcome unknown)
   - provider: proton | gmail | unknown
-  - preservation: which rule let the copy through — label_destination (the
+  - copyRule: which rule let the copy through — label_destination (the
       provider's registry rule treats the destination as a label folder) or
       acknowledged (no rule for this provider, caller passed the flag).
       Neither is a guarantee about the server.
@@ -573,9 +574,11 @@ sending, drafts, replies, and forwards.
       copied | failed | uncertain | not_attempted. uidMap appears only when
       the server reports it (UIDPLUS COPYUID).
   - on refusal: success: false and a reason — destination_not_found,
-      source_not_found, same_folder, no_uids, destination_may_move_source,
-      destination_is_trash_or_junk, destination_is_system_folder,
-      destination_not_verified or preservation_unverified
+      source_not_found, same_folder, no_uids, invalid_uids, too_many_uids,
+      source_not_selectable, source_is_trash_or_junk, destination_not_selectable,
+      destination_may_move_source, destination_is_trash_or_junk,
+      destination_is_system_folder, destination_not_verified or
+      preservation_unverified
   ```
   `failed` means definitely not copied: the UID isn't in the source folder, or
   the server refused the copy. `uncertain` means the connection dropped while
@@ -590,7 +593,9 @@ sending, drafts, replies, and forwards.
 
   | Account provider | Destination | Result |
   |---|---|---|
+  | Any | A folder that only groups others (`\Noselect` / `\NonExistent`, e.g. `[Gmail]`, Proton `Labels`); also refused as the source | Refused: `destination_not_selectable` (`source_not_selectable`) |
   | Any | Trash or Spam/Junk (`\Trash` / `\Junk` special-use) | Refused: `destination_is_trash_or_junk` |
+  | Any | *Source* is Trash or Spam/Junk (any destination) | Refused: `source_is_trash_or_junk`. On Gmail a copy out of Trash or Spam restores the message; restore it with `imap_move_email` instead, then copy. |
   | Any | Other system folder: special-use `\Sent`, `\Drafts`, `\Archive`, `\All`, `\Flagged` or `\Important`, whatever its name | Refused: `destination_is_system_folder` |
   | `protonmail` | `Labels/<name>` | Copied (`label_destination`); adds the label. |
   | `protonmail` | `Folders/<name>`, INBOX, or anything else without a role | Refused: `destination_may_move_source` |

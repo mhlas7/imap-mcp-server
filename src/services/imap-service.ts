@@ -4,7 +4,7 @@ import { ImapAccount, EmailMessage, EmailContent, EmailBodyFormat, EmailLocation
 import type { AccountManager } from './account-manager.js';
 import { htmlToMarkdown, normalizeWhitespace } from './html-to-markdown.js';
 import { assertCredentialsResolved } from '../utils/env-credentials.js';
-import { classifyCopyDestination } from '../utils/copy-policy.js';
+import { classifyCopyDestination, isTrashOrJunk, isUnselectable } from '../utils/copy-policy.js';
 import { resolveAccountProvider } from '../providers/email-providers.js';
 import { matchesSearchCriteria, extractMessageIds } from '../utils/client-side-search.js';
 import { ImapOperationError } from '../utils/operation-error.js';
@@ -157,14 +157,17 @@ export interface CopyEmailResultItem {
  * applies and the caller accepted with acknowledgeSourceMayChange that the
  * original might leave its folder.
  */
-export type CopyPreservation = 'label_destination' | 'acknowledged';
+export type CopyRule = 'label_destination' | 'acknowledged';
+
+/** Most UIDs one imap_copy_email call takes (one COPY is sent per UID). */
+export const MAX_COPY_UIDS = 1000;
 
 export interface CopyEmailResult {
   source: string;
   destination: string;
   /** Registry id of the account's provider, or null when none was identified. */
   provider: string | null;
-  preservation: CopyPreservation;
+  copyRule: CopyRule;
   results: CopyEmailResultItem[];
 }
 
@@ -1540,6 +1543,19 @@ export class ImapService {
     if (uidList.length === 0) {
       throw new ImapOperationError('no_uids', 'No UIDs given');
     }
+    const invalid = uidList.filter(uid => !Number.isSafeInteger(uid) || uid < 1);
+    if (invalid.length > 0) {
+      throw new ImapOperationError(
+        'invalid_uids',
+        `UIDs must be positive integers; got ${invalid.slice(0, 5).map(String).join(', ')}`,
+      );
+    }
+    if (uidList.length > MAX_COPY_UIDS) {
+      throw new ImapOperationError(
+        'too_many_uids',
+        `At most ${MAX_COPY_UIDS} UIDs per call (got ${uidList.length}); split them into several calls`,
+      );
+    }
     const sameFolder = folder === targetFolder || (isInbox(folder) && isInbox(targetFolder));
     if (sameFolder) {
       throw new ImapOperationError(
@@ -1554,6 +1570,22 @@ export class ImapService {
       list.some(f => f.path === path || (isInbox(path) && isInbox(f.path)));
     if (!exists(folder)) {
       throw new ImapOperationError('source_not_found', `Source folder "${folder}" does not exist`);
+    }
+    const sourceEntry = list.find(f => f.path === folder)
+      ?? (isInbox(folder) ? list.find(f => isInbox(f.path)) : undefined);
+    if (isUnselectable(Array.from(sourceEntry?.flags ?? []))) {
+      throw new ImapOperationError(
+        'source_not_selectable',
+        `Source folder "${folder}" cannot hold messages (\\Noselect); pick one of its subfolders`,
+      );
+    }
+    if (isTrashOrJunk(sourceEntry?.specialUse, Array.from(sourceEntry?.flags ?? []))) {
+      throw new ImapOperationError(
+        'source_is_trash_or_junk',
+        `"${folder}" is a Trash or Spam folder, and copying out of it is refused: on some providers (Gmail) the copy ` +
+          'takes the message out of Trash or Spam instead of leaving it there. To restore a message, move it with ' +
+          'imap_move_email first, then copy it from its new folder.',
+      );
     }
     if (!exists(targetFolder)) {
       throw new ImapOperationError(
@@ -1578,13 +1610,13 @@ export class ImapService {
       specialUse: destinationEntry?.specialUse,
       attributes: Array.from(destinationEntry?.flags ?? []),
     });
-    let preservation: CopyPreservation;
+    let copyRule: CopyRule;
     if (verdict.kind === 'refused') {
       throw new ImapOperationError(verdict.reason, verdict.message);
     } else if (verdict.kind === 'label_destination') {
-      preservation = 'label_destination';
+      copyRule = 'label_destination';
     } else if (options.acknowledgeSourceMayChange === true) {
-      preservation = 'acknowledged';
+      copyRule = 'acknowledged';
     } else {
       throw new ImapOperationError(
         'preservation_unverified',
@@ -1645,7 +1677,7 @@ export class ImapService {
         }
       }
 
-      return { source: folder, destination: targetFolder, provider: provider?.id ?? null, preservation, results };
+      return { source: folder, destination: targetFolder, provider: provider?.id ?? null, copyRule, results };
     } finally {
       lock.release();
     }

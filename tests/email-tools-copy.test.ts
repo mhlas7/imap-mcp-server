@@ -38,7 +38,7 @@ describe('imap_copy_email Tool Handler', () => {
       source: 'INBOX',
       destination: 'Labels/Trip',
       provider: 'protonmail',
-      preservation: 'label_destination',
+      copyRule: 'label_destination',
       results: [{ uid: 100, status: 'copied', uidMap: { 100: 7 } }],
     });
 
@@ -54,7 +54,7 @@ describe('imap_copy_email Tool Handler', () => {
       uncertainCount: 0,
       notAttemptedCount: 0,
       provider: 'protonmail',
-      preservation: 'label_destination',
+      copyRule: 'label_destination',
     });
     expect(parsed.results[0].uidMap).toEqual({ '100': 7 });
   });
@@ -64,7 +64,7 @@ describe('imap_copy_email Tool Handler', () => {
       source: 'INBOX',
       destination: 'Labels/Trip',
       provider: 'protonmail',
-      preservation: 'label_destination',
+      copyRule: 'label_destination',
       results: [{ uid: 100, status: 'copied' }],
     });
 
@@ -79,7 +79,7 @@ describe('imap_copy_email Tool Handler', () => {
       source: 'INBOX',
       destination: 'Labels/Trip',
       provider: 'protonmail',
-      preservation: 'label_destination',
+      copyRule: 'label_destination',
       results: [
         { uid: 1, status: 'copied' },
         { uid: 2, status: 'failed', error: 'UID 2 not found in "INBOX"' },
@@ -107,7 +107,7 @@ describe('imap_copy_email Tool Handler', () => {
       source: 'INBOX',
       destination: 'Labels/Trip',
       provider: 'protonmail',
-      preservation: 'label_destination',
+      copyRule: 'label_destination',
       results: [{ uid: 1, status: 'failed', error: 'The server refused the copy' }],
     });
 
@@ -116,12 +116,12 @@ describe('imap_copy_email Tool Handler', () => {
     expect(parsed).toMatchObject({ success: false, partial: false, uncertain: false, failedCount: 1 });
   });
 
-  it('passes acknowledgeSourceMayChange through and reports preservation "acknowledged"', async () => {
+  it('passes acknowledgeSourceMayChange through and reports copyRule "acknowledged"', async () => {
     mockImapService.copyEmail.mockResolvedValueOnce({
       source: 'INBOX',
       destination: 'INBOX.Projects',
       provider: null,
-      preservation: 'acknowledged',
+      copyRule: 'acknowledged',
       results: [{ uid: 100, status: 'copied' }],
     });
 
@@ -130,7 +130,7 @@ describe('imap_copy_email Tool Handler', () => {
     expect(mockImapService.copyEmail).toHaveBeenCalledWith(
       'acc1', 'INBOX', 100, 'INBOX.Projects', { acknowledgeSourceMayChange: true },
     );
-    expect(parsed).toMatchObject({ success: true, provider: null, preservation: 'acknowledged' });
+    expect(parsed).toMatchObject({ success: true, provider: null, copyRule: 'acknowledged' });
   });
 
   it('does not promise that the original always stays in place', () => {
@@ -141,10 +141,12 @@ describe('imap_copy_email Tool Handler', () => {
     expect(copyEmailDescription).toMatch(/Folders\/<name>.*refused/s);
     expect(copyEmailDescription).not.toMatch(/guarantee applies|known to keep|"verified"/i);
     expect(copyEmailDescription).toMatch(/system folders .*refused/is);
+    expect(copyEmailDescription).toMatch(/out of Trash or Spam is refused/);
   });
 
   it.each([
     'destination_not_found', 'source_not_found', 'same_folder', 'no_uids',
+    'invalid_uids', 'too_many_uids', 'source_not_selectable', 'source_is_trash_or_junk', 'destination_not_selectable',
     'destination_may_move_source', 'destination_is_trash_or_junk', 'destination_is_system_folder',
     'destination_not_verified', 'preservation_unverified',
   ])(

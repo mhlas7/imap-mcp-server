@@ -22,6 +22,7 @@ export type CopyDestinationClass =
   | { kind: 'unverified' };
 
 export type CopyRefusalReason =
+  | 'destination_not_selectable'
   | 'destination_is_trash_or_junk'
   | 'destination_is_system_folder'
   | 'destination_may_move_source'
@@ -42,12 +43,29 @@ export interface CopyDestinationInput {
 
 const TRASH_OR_JUNK = new Set(['\\trash', '\\junk']);
 
+/** LIST flags of a name that can't hold messages (a hierarchy node, or a
+ * Gmail parent such as "[Gmail]"). */
+const UNSELECTABLE = new Set(['\\noselect', '\\nonexistent']);
+
 /** RFC 6154 roles (plus Gmail's \Important) other than Trash and Junk. */
 const SYSTEM_ROLES = new Set(['\\all', '\\archive', '\\drafts', '\\flagged', '\\sent', '\\important']);
 
 const isInbox = (path: string) => path.toUpperCase() === 'INBOX';
 
-/** Every role the server attached to the folder, lower-cased. */
+/** True when the server marks the folder as Trash or Spam (\Trash / \Junk,
+ * from specialUse or the LIST flags). imap_copy_email refuses such a source:
+ * a COPY out of Trash can restore the message (Gmail drops it from Trash once
+ * it has a label) instead of leaving the original where it was. */
+export function isTrashOrJunk(specialUse: string | undefined, attributes: string[] | undefined): boolean {
+  return [...rolesOf(specialUse, attributes)].some(r => TRASH_OR_JUNK.has(r));
+}
+
+/** True when the LIST flags mark the folder as unable to hold messages. */
+export function isUnselectable(attributes: string[] | undefined): boolean {
+  return (attributes ?? []).some(f => UNSELECTABLE.has(f.toLowerCase()));
+}
+
+/** Every role and flag the server attached to the folder, lower-cased. */
 function rolesOf(specialUse: string | undefined, attributes: string[] | undefined): Set<string> {
   const roles = new Set<string>();
   for (const flag of [specialUse, ...(attributes ?? [])]) {
@@ -60,6 +78,14 @@ export function classifyCopyDestination({
   providerName, behavior, destination, specialUse, attributes,
 }: CopyDestinationInput): CopyDestinationClass {
   const roles = rolesOf(specialUse, attributes);
+
+  if (isUnselectable(attributes)) {
+    return {
+      kind: 'refused',
+      reason: 'destination_not_selectable',
+      message: `"${destination}" cannot hold messages (\\Noselect); it only groups other folders. Pick one of its subfolders.`,
+    };
+  }
 
   // On every server: Gmail strips a message's labels when it is copied to
   // Trash or Spam, and nowhere is it a "keep it here too" request.
