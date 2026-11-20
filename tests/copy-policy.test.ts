@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyCopyDestination, isTrashOrJunk, isUnselectable } from '../src/utils/copy-policy.js';
+import { classifyCopyDestination, isTrashOrJunk } from '../src/utils/copy-policy.js';
 import { getProviderById, resolveAccountProvider, accountProviderIds } from '../src/providers/email-providers.js';
 
 const behaviorOf = (id: string) => getProviderById(id)?.copyBehavior;
@@ -73,12 +73,6 @@ describe('classifyCopyDestination with the registry copyBehavior', () => {
     expect(isTrashOrJunk(undefined, ['\\HasNoChildren', '\\JUNK'])).toBe(true);
     expect(isTrashOrJunk('\\Sent', ['\\Sent'])).toBe(false);
     expect(isTrashOrJunk(undefined, undefined)).toBe(false);
-  });
-
-  it('isUnselectable reads the LIST flags case-insensitively', () => {
-    expect(isUnselectable(['\\NOSELECT'])).toBe(true);
-    expect(isUnselectable(['\\HasNoChildren'])).toBe(false);
-    expect(isUnselectable(undefined)).toBe(false);
   });
 
   it('refuses the owner\'s Gmail examples as system folders', () => {

@@ -4,7 +4,8 @@ import { ImapAccount, EmailMessage, EmailContent, EmailBodyFormat, EmailLocation
 import type { AccountManager } from './account-manager.js';
 import { htmlToMarkdown, normalizeWhitespace } from './html-to-markdown.js';
 import { assertCredentialsResolved } from '../utils/env-credentials.js';
-import { classifyCopyDestination, isTrashOrJunk, isUnselectable } from '../utils/copy-policy.js';
+import { classifyCopyDestination, isTrashOrJunk } from '../utils/copy-policy.js';
+import { isNonSelectable } from '../utils/search-folders.js';
 import { resolveAccountProvider } from '../providers/email-providers.js';
 import { matchesSearchCriteria, extractMessageIds } from '../utils/client-side-search.js';
 import { ImapOperationError } from '../utils/operation-error.js';
@@ -1573,7 +1574,7 @@ export class ImapService {
     }
     const sourceEntry = list.find(f => f.path === folder)
       ?? (isInbox(folder) ? list.find(f => isInbox(f.path)) : undefined);
-    if (isUnselectable(Array.from(sourceEntry?.flags ?? []))) {
+    if (isNonSelectable({ attributes: Array.from(sourceEntry?.flags ?? []) })) {
       throw new ImapOperationError(
         'source_not_selectable',
         `Source folder "${folder}" cannot hold messages (\\Noselect); pick one of its subfolders`,

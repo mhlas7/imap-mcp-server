@@ -1,4 +1,5 @@
 import type { CopyBehavior } from '../providers/email-providers.js';
+import { isNonSelectable } from './search-folders.js';
 
 /**
  * Which COPY destinations imap_copy_email accepts.
@@ -43,10 +44,6 @@ export interface CopyDestinationInput {
 
 const TRASH_OR_JUNK = new Set(['\\trash', '\\junk']);
 
-/** LIST flags of a name that can't hold messages (a hierarchy node, or a
- * Gmail parent such as "[Gmail]"). */
-const UNSELECTABLE = new Set(['\\noselect', '\\nonexistent']);
-
 /** RFC 6154 roles (plus Gmail's \Important) other than Trash and Junk. */
 const SYSTEM_ROLES = new Set(['\\all', '\\archive', '\\drafts', '\\flagged', '\\sent', '\\important']);
 
@@ -58,11 +55,6 @@ const isInbox = (path: string) => path.toUpperCase() === 'INBOX';
  * it has a label) instead of leaving the original where it was. */
 export function isTrashOrJunk(specialUse: string | undefined, attributes: string[] | undefined): boolean {
   return [...rolesOf(specialUse, attributes)].some(r => TRASH_OR_JUNK.has(r));
-}
-
-/** True when the LIST flags mark the folder as unable to hold messages. */
-export function isUnselectable(attributes: string[] | undefined): boolean {
-  return (attributes ?? []).some(f => UNSELECTABLE.has(f.toLowerCase()));
 }
 
 /** Every role and flag the server attached to the folder, lower-cased. */
@@ -79,7 +71,7 @@ export function classifyCopyDestination({
 }: CopyDestinationInput): CopyDestinationClass {
   const roles = rolesOf(specialUse, attributes);
 
-  if (isUnselectable(attributes)) {
+  if (isNonSelectable({ attributes: attributes ?? [] })) {
     return {
       kind: 'refused',
       reason: 'destination_not_selectable',
